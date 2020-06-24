@@ -1,5 +1,5 @@
 # Libusb-rs-async
-This is a fork of the [libusb-rs library](http://dcuddeback.github.io/libusb-rs).
+This is a fork of the [libusb-rs library](https://github.com/dcuddeback/libusb-rs).
 This version of the library has been extended to support asynchronous operations
 using futures. So far only control tranfers and interrupt in is supported.
 Most of the documentation for libusb-rs is still relevant for this library.
