@@ -90,7 +90,7 @@ impl Drop for Transfer
 extern "C" fn asyn_callback(libusb_transfer: *mut libusb_transfer)
 {
     {
-        let mut waker = {
+        let waker = {
             let transfer = unsafe {
                 Arc::<Transfer>::from_raw((*libusb_transfer).user_data  
                                           as *const Transfer)};

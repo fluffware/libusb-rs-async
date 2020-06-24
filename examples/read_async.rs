@@ -1,8 +1,7 @@
 extern crate libusb_async as libusb;
 extern crate futures;
 use libusb::*;
-use std::thread;
-use std::time::Duration;
+
  use std::convert::TryInto;
 use futures::executor::block_on;
 fn main()
