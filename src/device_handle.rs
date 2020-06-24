@@ -1,14 +1,14 @@
-use std::marker::PhantomData;
-use std::mem;
+use std::mem::MaybeUninit;
 use std::slice;
 use std::time::Duration;
-
+use std::sync::Arc;
 use bit_set::BitSet;
 use libc::{c_int, c_uint, c_uchar};
 use libusb::*;
 
-use context::Context;
+use context::{ContextAsync};
 use error::{self, Error};
+use transfer::{self, Transfer};
 use device_descriptor::DeviceDescriptor;
 use config_descriptor::ConfigDescriptor;
 use interface_descriptor::InterfaceDescriptor;
@@ -16,34 +16,35 @@ use fields::{Direction, RequestType, Recipient, request_type};
 use language::Language;
 
 /// A handle to an open USB device.
-pub struct DeviceHandle<'a> {
-    _context: PhantomData<&'a Context>,
+pub struct DeviceHandle {
+    context: Arc<ContextAsync>,
     handle: *mut libusb_device_handle,
     interfaces: BitSet,
 }
 
-impl<'a> Drop for DeviceHandle<'a> {
+impl Drop for DeviceHandle {
     /// Closes the device.
     fn drop(&mut self) {
         unsafe {
             for iface in self.interfaces.iter() {
                 libusb_release_interface(self.handle, iface as c_int);
             }
-
-            libusb_close(self.handle);
+            ContextAsync::device_close(&self.context,
+                                       || libusb_close(self.handle));
         }
     }
 }
 
-unsafe impl<'a> Send for DeviceHandle<'a> {}
-unsafe impl<'a> Sync for DeviceHandle<'a> {}
+unsafe impl Send for DeviceHandle {}
+unsafe impl Sync for DeviceHandle {}
 
-impl<'a> DeviceHandle<'a> {
+impl DeviceHandle {
     /// Returns the active configuration number.
     pub fn active_configuration(&self) -> ::Result<u8> {
-        let mut config = unsafe { mem::uninitialized() };
+        let mut config = MaybeUninit::<i32>::uninit();
 
-        try_unsafe!(libusb_get_configuration(self.handle, &mut config));
+        try_unsafe!(libusb_get_configuration(self.handle, config.as_mut_ptr()));
+        let config = unsafe{config.assume_init()};
         Ok(config as u8)
     }
 
@@ -142,13 +143,20 @@ impl<'a> DeviceHandle<'a> {
             return Err(Error::InvalidParam);
         }
 
-        let mut transferred: c_int = unsafe { mem::uninitialized() };
-
+        let mut transferred = MaybeUninit::<c_int>::uninit();
+        
         let ptr = buf.as_mut_ptr() as *mut c_uchar;
         let len = buf.len() as c_int;
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
-
-        match unsafe { libusb_interrupt_transfer(self.handle, endpoint, ptr, len, &mut transferred, timeout_ms) } {
+        
+        let res = unsafe{
+            libusb_interrupt_transfer(self.handle, endpoint, 
+                                      ptr, len, 
+                                      transferred.as_mut_ptr(),
+                                      timeout_ms) };
+        let transferred = unsafe {transferred.assume_init()};
+        match res 
+        {
             0 => {
                 Ok(transferred as usize)
             },
@@ -188,13 +196,19 @@ impl<'a> DeviceHandle<'a> {
             return Err(Error::InvalidParam);
         }
 
-        let mut transferred: c_int = unsafe { mem::uninitialized() };
+        let mut transferred = MaybeUninit::<c_int>::uninit();
 
         let ptr = buf.as_ptr() as *mut c_uchar;
         let len = buf.len() as c_int;
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
 
-        match unsafe { libusb_interrupt_transfer(self.handle, endpoint, ptr, len, &mut transferred, timeout_ms) } {
+        let res = unsafe {
+            libusb_interrupt_transfer(self.handle, endpoint,
+                                      ptr, len,
+                                      transferred.as_mut_ptr(),
+                                      timeout_ms) };
+        let transferred = unsafe {transferred.assume_init()};
+        match res {
             0 => {
                 Ok(transferred as usize)
             },
@@ -236,13 +250,20 @@ impl<'a> DeviceHandle<'a> {
             return Err(Error::InvalidParam);
         }
 
-        let mut transferred: c_int = unsafe { mem::uninitialized() };
+        let mut transferred = MaybeUninit::<c_int>::uninit();
 
         let ptr = buf.as_mut_ptr() as *mut c_uchar;
         let len = buf.len() as c_int;
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
 
-        match unsafe { libusb_bulk_transfer(self.handle, endpoint, ptr, len, &mut transferred, timeout_ms) } {
+        let res = unsafe {
+            libusb_bulk_transfer(self.handle, endpoint, 
+                                 ptr, len,
+                                 transferred.as_mut_ptr(),
+                                 timeout_ms) };
+        let transferred = unsafe {transferred.assume_init()};
+        
+        match res {
             0 => {
                 Ok(transferred as usize)
             },
@@ -282,13 +303,18 @@ impl<'a> DeviceHandle<'a> {
             return Err(Error::InvalidParam);
         }
 
-        let mut transferred: c_int = unsafe { mem::uninitialized() };
+        let mut transferred = MaybeUninit::<c_int>::uninit();
 
         let ptr = buf.as_ptr() as *mut c_uchar;
         let len = buf.len() as c_int;
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
-
-        match unsafe { libusb_bulk_transfer(self.handle, endpoint, ptr, len, &mut transferred, timeout_ms) } {
+        let res =unsafe {
+            libusb_bulk_transfer(self.handle, endpoint, 
+                                 ptr, len,
+                                 transferred.as_mut_ptr(),
+                                 timeout_ms) };
+        let transferred = unsafe{transferred.assume_init()};
+        match res {
             0 => {
                 Ok(transferred as usize)
             },
@@ -403,16 +429,16 @@ impl<'a> DeviceHandle<'a> {
     pub fn read_languages(&self, timeout: Duration) -> ::Result<Vec<Language>> {
         let mut buf = Vec::<u8>::with_capacity(256);
 
-        let mut buf_slice = unsafe {
+        let buf_slice = unsafe {
             slice::from_raw_parts_mut((&mut buf[..]).as_mut_ptr(), buf.capacity())
         };
 
-        let len = try!(self.read_control(request_type(Direction::In, RequestType::Standard, Recipient::Device),
-                                         LIBUSB_REQUEST_GET_DESCRIPTOR,
-                                         (LIBUSB_DT_STRING as u16) << 8,
-                                         0,
-                                         buf_slice,
-                                         timeout));
+        let len = self.read_control(request_type(Direction::In, RequestType::Standard, Recipient::Device),
+                                    LIBUSB_REQUEST_GET_DESCRIPTOR,
+                                    (LIBUSB_DT_STRING as u16) << 8,
+                                    0,
+                                    buf_slice,
+                                    timeout)?;
 
         unsafe {
             buf.set_len(len);
@@ -430,16 +456,16 @@ impl<'a> DeviceHandle<'a> {
     pub fn read_string_descriptor(&self, language: Language, index: u8, timeout: Duration) -> ::Result<String> {
         let mut buf = Vec::<u8>::with_capacity(256);
 
-        let mut buf_slice = unsafe {
+        let buf_slice = unsafe {
             slice::from_raw_parts_mut((&mut buf[..]).as_mut_ptr(), buf.capacity())
         };
 
-        let len = try!(self.read_control(request_type(Direction::In, RequestType::Standard, Recipient::Device),
-                                         LIBUSB_REQUEST_GET_DESCRIPTOR,
-                                         (LIBUSB_DT_STRING as u16) << 8 | index as u16,
-                                         language.lang_id(),
-                                         buf_slice,
-                                         timeout));
+        let len = self.read_control(request_type(Direction::In, RequestType::Standard, Recipient::Device),
+                                    LIBUSB_REQUEST_GET_DESCRIPTOR,
+                                    (LIBUSB_DT_STRING as u16) << 8 | index as u16,
+                                    language.lang_id(),
+                                    buf_slice,
+                                    timeout)?;
 
         unsafe {
             buf.set_len(len);
@@ -491,12 +517,30 @@ impl<'a> DeviceHandle<'a> {
             Some(n) => self.read_string_descriptor(language, n, timeout)
         }
     }
+
+    /// Allocate a new transfer object that can be used to send asynchronous
+    /// transfer requests.
+    pub fn alloc_transfer(&self, iso_packets: u32)
+                      -> ::Result<Transfer>
+    {
+        let transfer = unsafe {
+            let t = libusb_alloc_transfer(iso_packets as c_int);
+            if t.is_null() {
+                return Err(Error::NoMem);
+            }
+            (*t).dev_handle = self.handle;
+            t
+                
+        };
+
+        Ok(unsafe{transfer::from_libusb(&self.context, transfer)})
+    }
 }
 
 #[doc(hidden)]
-pub unsafe fn from_libusb<'a>(context: PhantomData<&'a Context>, handle: *mut libusb_device_handle) -> DeviceHandle<'a> {
+pub unsafe fn from_libusb(context: &Arc<ContextAsync>, handle: *mut libusb_device_handle) -> DeviceHandle {
     DeviceHandle {
-        _context: context,
+        context: context.clone(),
         handle: handle,
         interfaces: BitSet::with_capacity(u8::max_value() as usize + 1),
     }

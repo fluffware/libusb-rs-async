@@ -1,7 +1,7 @@
 [package]
-name = "libusb"
-version = "0.3.0"
-authors = ["David Cuddeback <david.cuddeback@gmail.com>"]
+name = "libusb-async"
+version = "0.5.0"
+authors = ["David Cuddeback <david.cuddeback@gmail.com>", "Simon Berg <ksb@fluffware.se>"]
 description = "Rust library for accessing USB devices."
 license = "MIT"
 homepage = "https://github.com/dcuddeback/libusb-rs"
@@ -17,3 +17,4 @@ libc = "0.2"
 
 [dev-dependencies]
 regex = "0.1.26"
+futures = "0.3.5"

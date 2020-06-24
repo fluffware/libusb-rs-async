@@ -132,7 +132,7 @@ pub enum Recipient {
 /// providing the fields in the same order to the tuple. For example:
 ///
 /// ```
-/// libusb::Version(0, 2, 1);
+/// libusb_async::Version(0, 2, 1);
 /// ```
 ///
 /// represents the version 0.2.1.
@@ -192,9 +192,9 @@ impl Version {
 /// device, which could be used for reading a device's descriptors:
 ///
 /// ```no_run
-/// use libusb::{Direction,RequestType,Recipient};
+/// use libusb_async::{Direction,RequestType,Recipient};
 ///
-/// libusb::request_type(Direction::In, RequestType::Standard, Recipient::Device);
+/// libusb_async::request_type(Direction::In, RequestType::Standard, Recipient::Device);
 /// ```
 pub fn request_type(direction: Direction, request_type: RequestType, recipient: Recipient) -> u8 {
     let mut value: u8 = match direction {

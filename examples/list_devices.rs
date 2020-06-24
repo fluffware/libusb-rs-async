@@ -1,9 +1,9 @@
-extern crate libusb;
+extern crate libusb_async as libusb;
 
 use std::time::Duration;
 
-struct UsbDevice<'a> {
-    handle: libusb::DeviceHandle<'a>,
+struct UsbDevice {
+    handle: libusb::DeviceHandle,
     language: libusb::Language,
     timeout: Duration
 }

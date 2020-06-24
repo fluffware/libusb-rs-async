@@ -1,4 +1,4 @@
-extern crate libusb;
+extern crate libusb_async as libusb;
 
 fn main() {
     let version = libusb::version();

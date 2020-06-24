@@ -1,19 +1,19 @@
-use std::marker::PhantomData;
 use std::slice;
+use std::sync::{Arc};
 
 use libusb::*;
 
-use context::Context;
+use context::ContextAsync;
 use device::{self, Device};
 
 /// A list of detected USB devices.
-pub struct DeviceList<'a> {
-    context: PhantomData<&'a Context>,
+pub struct DeviceList {
+    context: Arc<ContextAsync>,
     list: *const *mut libusb_device,
     len: usize,
 }
 
-impl<'a> Drop for DeviceList<'a> {
+impl Drop for DeviceList {
     /// Frees the device list.
     fn drop(&mut self) {
         unsafe {
@@ -22,7 +22,7 @@ impl<'a> Drop for DeviceList<'a> {
     }
 }
 
-impl<'a> DeviceList<'a> {
+impl DeviceList {
     /// Returns the number of devices in the list.
     pub fn len(&self) -> usize {
         self.len
@@ -31,9 +31,9 @@ impl<'a> DeviceList<'a> {
     /// Returns an iterator over the devices in the list.
     ///
     /// The iterator yields a sequence of `Device` objects.
-    pub fn iter<'b>(&'b self) -> Devices<'a, 'b> {
+    pub fn iter(&self) -> Devices {
         Devices {
-            context: self.context,
+            context: self.context.clone(),
             devices: unsafe { slice::from_raw_parts(self.list, self.len) },
             index: 0,
         }
@@ -41,21 +41,21 @@ impl<'a> DeviceList<'a> {
 }
 
 /// Iterator over detected USB devices.
-pub struct Devices<'a, 'b> {
-    context: PhantomData<&'a Context>,
+pub struct Devices<'b> {
+    context: Arc<ContextAsync>,
     devices: &'b [*mut libusb_device],
     index: usize,
 }
 
-impl<'a, 'b> Iterator for Devices<'a, 'b> {
-    type Item = Device<'a>;
+impl<'b> Iterator for Devices<'b> {
+    type Item = Device;
 
-    fn next(&mut self) -> Option<Device<'a>> {
+    fn next(&mut self) -> Option<Device> {
         if self.index < self.devices.len() {
             let device = self.devices[self.index];
 
             self.index += 1;
-            Some(unsafe { device::from_libusb(self.context, device) })
+            Some(unsafe { device::from_libusb(&self.context, device) })
         }
         else {
             None
@@ -70,9 +70,9 @@ impl<'a, 'b> Iterator for Devices<'a, 'b> {
 
 
 #[doc(hidden)]
-pub unsafe fn from_libusb<'a>(_context: &'a Context, list: *const *mut libusb_device, len: usize,) -> DeviceList<'a> {
+pub unsafe fn from_libusb(context: &Arc<ContextAsync>, list: *const *mut libusb_device, len: usize,) -> DeviceList {
     DeviceList {
-        context: PhantomData,
+        context: context.clone(),
         list: list,
         len: len,
     }

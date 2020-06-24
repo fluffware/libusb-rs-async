@@ -1,9 +1,8 @@
-use std::marker::PhantomData;
-use std::mem;
-
+use std::sync::Arc;
 use libusb::*;
+use std::mem::MaybeUninit;
 
-use context::Context;
+use context::ContextAsync;
 use device_handle::{self, DeviceHandle};
 use device_descriptor::{self, DeviceDescriptor};
 use config_descriptor::{self, ConfigDescriptor};
@@ -11,12 +10,12 @@ use fields::{self, Speed};
 
 
 /// A reference to a USB device.
-pub struct Device<'a> {
-    context: PhantomData<&'a Context>,
+pub struct Device {
+    context: Arc<ContextAsync>,
     device: *mut libusb_device,
 }
 
-impl<'a> Drop for Device<'a> {
+impl Drop for Device {
     /// Releases the device reference.
     fn drop(&mut self) {
         unsafe {
@@ -25,35 +24,53 @@ impl<'a> Drop for Device<'a> {
     }
 }
 
-unsafe impl<'a> Send for Device<'a> {}
-unsafe impl<'a> Sync for Device<'a> {}
+unsafe impl Send for Device {}
+unsafe impl Sync for Device {}
 
-impl<'a> Device<'a> {
+impl Device {
     /// Reads the device descriptor.
     pub fn device_descriptor(&self) -> ::Result<DeviceDescriptor> {
-        let mut descriptor: libusb_device_descriptor = unsafe { mem::uninitialized() };
+        let mut descriptor = MaybeUninit::< libusb_device_descriptor>::uninit();
 
         // since libusb 1.0.16, this function always succeeds
-        try_unsafe!(libusb_get_device_descriptor(self.device, &mut descriptor));
-
+        try_unsafe!(libusb_get_device_descriptor(self.device, 
+                                                 descriptor.as_mut_ptr()));
+        let descriptor = unsafe{descriptor.assume_init()};
         Ok(device_descriptor::from_libusb(descriptor))
     }
 
-    /// Reads a configuration descriptor.
+    /// Reads a configuration description for a given index.
     pub fn config_descriptor(&self, config_index: u8) -> ::Result<ConfigDescriptor> {
-        let mut config: *const libusb_config_descriptor = unsafe { mem::uninitialized() };
+        let mut config = 
+            MaybeUninit::<*const libusb_config_descriptor>::uninit();
 
-        try_unsafe!(libusb_get_config_descriptor(self.device, config_index, &mut config));
-
+        try_unsafe!(libusb_get_config_descriptor(self.device, config_index, 
+                                                 config.as_mut_ptr()));
+        let config = unsafe{config.assume_init()};
+        Ok(unsafe { config_descriptor::from_libusb(config) })
+    }
+    
+    /// Reads a configuration descriptor for a given configuration value.
+    pub fn config_descriptor_by_value(&self, config_value: u8)
+                                      -> ::Result<ConfigDescriptor> {
+        let mut config = 
+            MaybeUninit::<*const libusb_config_descriptor>::uninit();
+        
+        try_unsafe!(libusb_get_config_descriptor_by_value(self.device,
+                                                          config_value, 
+                                                          config.as_mut_ptr()));
+        let config = unsafe{config.assume_init()};
         Ok(unsafe { config_descriptor::from_libusb(config) })
     }
 
     /// Reads the configuration descriptor for the current configuration.
     pub fn active_config_descriptor(&self) -> ::Result<ConfigDescriptor> {
-        let mut config: *const libusb_config_descriptor = unsafe { mem::uninitialized() };
+        let mut config = 
+            MaybeUninit::<*const libusb_config_descriptor>::uninit();
 
-        try_unsafe!(libusb_get_active_config_descriptor(self.device, &mut config));
-
+        try_unsafe!(libusb_get_active_config_descriptor(self.device,
+                                                        config.as_mut_ptr()));
+        let config = unsafe{config.assume_init()};
         Ok(unsafe { config_descriptor::from_libusb(config) })
     }
 
@@ -79,21 +96,23 @@ impl<'a> Device<'a> {
     }
 
     /// Opens the device.
-    pub fn open(&self) -> ::Result<DeviceHandle<'a>> {
-        let mut handle: *mut libusb_device_handle = unsafe { mem::uninitialized() };
+    pub fn open(&self) -> ::Result<DeviceHandle> {
+        let mut handle = MaybeUninit::<*mut libusb_device_handle>::uninit();
 
-        try_unsafe!(libusb_open(self.device, &mut handle));
-
-        Ok(unsafe { device_handle::from_libusb(self.context, handle) })
+        try_unsafe!(libusb_open(self.device, handle.as_mut_ptr()));
+        ContextAsync::device_opened(&self.context);
+        let handle = unsafe {handle.assume_init()};
+        Ok(unsafe { device_handle::from_libusb(&self.context, handle) })
     }
 }
 
 #[doc(hidden)]
-pub unsafe fn from_libusb<'a>(context: PhantomData<&'a Context>, device: *mut libusb_device) -> Device<'a> {
+pub unsafe fn from_libusb(context: &Arc<ContextAsync>,
+                              device: *mut libusb_device) -> Device {
     libusb_ref_device(device);
 
     Device {
-        context: context,
+        context: context.clone(),
         device: device,
     }
 }
