@@ -1,7 +1,7 @@
 use std::mem::MaybeUninit;
 use std::slice;
 use std::time::Duration;
-use std::sync::Arc;
+use std::sync::{Arc,Mutex,MutexGuard};
 use bit_set::BitSet;
 use libc::{c_int, c_uint, c_uchar};
 use libusb::*;
@@ -16,7 +16,18 @@ use fields::{Direction, RequestType, Recipient, request_type};
 use language::Language;
 
 /// A handle to an open USB device.
-pub struct DeviceHandle {
+pub struct DeviceHandle (Arc<Mutex<DeviceHandleAsync>>);
+
+impl DeviceHandle
+{
+    fn handle<'a>(&'a self) -> MutexGuard<'a, DeviceHandleAsync>
+    {
+        self.0.lock().unwrap()
+    }
+}
+
+
+pub struct DeviceHandleAsync {
     context: Arc<ContextAsync>,
     handle: *mut libusb_device_handle,
     interfaces: BitSet,
@@ -25,12 +36,13 @@ pub struct DeviceHandle {
 impl Drop for DeviceHandle {
     /// Closes the device.
     fn drop(&mut self) {
+        let handle = self.handle();
         unsafe {
-            for iface in self.interfaces.iter() {
-                libusb_release_interface(self.handle, iface as c_int);
+            for iface in handle.interfaces.iter() {
+                libusb_release_interface(handle.handle, iface as c_int);
             }
-            ContextAsync::device_close(&self.context,
-                                       || libusb_close(self.handle));
+            ContextAsync::device_close(&handle.context,
+                                       || libusb_close(handle.handle));
         }
     }
 }
@@ -43,26 +55,28 @@ impl DeviceHandle {
     pub fn active_configuration(&self) -> ::Result<u8> {
         let mut config = MaybeUninit::<i32>::uninit();
 
-        try_unsafe!(libusb_get_configuration(self.handle, config.as_mut_ptr()));
+        try_unsafe!(libusb_get_configuration(self.handle().handle,
+                                             config.as_mut_ptr()));
         let config = unsafe{config.assume_init()};
         Ok(config as u8)
     }
 
     /// Sets the device's active configuration.
     pub fn set_active_configuration(&mut self, config: u8) -> ::Result<()> {
-        try_unsafe!(libusb_set_configuration(self.handle, config as c_int));
+        try_unsafe!(libusb_set_configuration(self.handle().handle, 
+                                             config as c_int));
         Ok(())
     }
 
     /// Puts the device in an unconfigured state.
     pub fn unconfigure(&mut self) -> ::Result<()> {
-        try_unsafe!(libusb_set_configuration(self.handle, -1));
+        try_unsafe!(libusb_set_configuration(self.handle().handle, -1));
         Ok(())
     }
 
     /// Resets the device.
     pub fn reset(&mut self) -> ::Result<()> {
-        try_unsafe!(libusb_reset_device(self.handle));
+        try_unsafe!(libusb_reset_device(self.handle().handle));
         Ok(())
     }
 
@@ -70,7 +84,8 @@ impl DeviceHandle {
     ///
     /// This method is not supported on all platforms.
     pub fn kernel_driver_active(&self, iface: u8) -> ::Result<bool> {
-        match unsafe { libusb_kernel_driver_active(self.handle, iface as c_int) } {
+        match unsafe { libusb_kernel_driver_active(self.handle().handle,
+                                                   iface as c_int) } {
             0 => Ok(false),
             1 => Ok(true),
             err => Err(error::from_libusb(err)),
@@ -81,7 +96,8 @@ impl DeviceHandle {
     ///
     /// This method is not supported on all platforms.
     pub fn detach_kernel_driver(&mut self, iface: u8) -> ::Result<()> {
-        try_unsafe!(libusb_detach_kernel_driver(self.handle, iface as c_int));
+        try_unsafe!(libusb_detach_kernel_driver(self.handle().handle,
+                                                iface as c_int));
         Ok(())
     }
 
@@ -89,7 +105,8 @@ impl DeviceHandle {
     ///
     /// This method is not supported on all platforms.
     pub fn attach_kernel_driver(&mut self, iface: u8) -> ::Result<()> {
-        try_unsafe!(libusb_attach_kernel_driver(self.handle, iface as c_int));
+        try_unsafe!(libusb_attach_kernel_driver(self.handle().handle, 
+                                                iface as c_int));
         Ok(())
     }
 
@@ -98,21 +115,23 @@ impl DeviceHandle {
     /// An interface must be claimed before operating on it. All claimed interfaces are released
     /// when the device handle goes out of scope.
     pub fn claim_interface(&mut self, iface: u8) -> ::Result<()> {
-        try_unsafe!(libusb_claim_interface(self.handle, iface as c_int));
-        self.interfaces.insert(iface as usize);
+        let mut handle = self.handle();
+        try_unsafe!(libusb_claim_interface(handle.handle, iface as c_int));
+        handle.interfaces.insert(iface as usize);
         Ok(())
     }
 
     /// Releases a claimed interface.
     pub fn release_interface(&mut self, iface: u8) -> ::Result<()> {
-        try_unsafe!(libusb_release_interface(self.handle, iface as c_int));
-        self.interfaces.remove(&(iface as usize));
+        let mut handle = self.handle();
+        try_unsafe!(libusb_release_interface(handle.handle, iface as c_int));
+        handle.interfaces.remove(&(iface as usize));
         Ok(())
     }
 
     /// Sets an interface's active setting.
     pub fn set_alternate_setting(&mut self, iface: u8, setting: u8) -> ::Result<()> {
-        try_unsafe!(libusb_set_interface_alt_setting(self.handle, iface as c_int, setting as c_int));
+        try_unsafe!(libusb_set_interface_alt_setting(self.handle().handle, iface as c_int, setting as c_int));
         Ok(())
     }
 
@@ -150,7 +169,7 @@ impl DeviceHandle {
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
         
         let res = unsafe{
-            libusb_interrupt_transfer(self.handle, endpoint, 
+            libusb_interrupt_transfer(self.handle().handle, endpoint, 
                                       ptr, len, 
                                       transferred.as_mut_ptr(),
                                       timeout_ms) };
@@ -203,7 +222,7 @@ impl DeviceHandle {
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
 
         let res = unsafe {
-            libusb_interrupt_transfer(self.handle, endpoint,
+            libusb_interrupt_transfer(self.handle().handle, endpoint,
                                       ptr, len,
                                       transferred.as_mut_ptr(),
                                       timeout_ms) };
@@ -257,7 +276,7 @@ impl DeviceHandle {
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
 
         let res = unsafe {
-            libusb_bulk_transfer(self.handle, endpoint, 
+            libusb_bulk_transfer(self.handle().handle, endpoint, 
                                  ptr, len,
                                  transferred.as_mut_ptr(),
                                  timeout_ms) };
@@ -309,7 +328,7 @@ impl DeviceHandle {
         let len = buf.len() as c_int;
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
         let res =unsafe {
-            libusb_bulk_transfer(self.handle, endpoint, 
+            libusb_bulk_transfer(self.handle().handle, endpoint, 
                                  ptr, len,
                                  transferred.as_mut_ptr(),
                                  timeout_ms) };
@@ -366,7 +385,9 @@ impl DeviceHandle {
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
 
         let res = unsafe {
-            libusb_control_transfer(self.handle, request_type, request, value, index, ptr, len, timeout_ms)
+            libusb_control_transfer(self.handle().handle,
+                                    request_type, request,
+                                    value, index, ptr, len, timeout_ms)
         };
 
         if res < 0 {
@@ -412,7 +433,9 @@ impl DeviceHandle {
         let timeout_ms = (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1_000_000) as c_uint;
 
         let res = unsafe {
-            libusb_control_transfer(self.handle, request_type, request, value, index, ptr, len, timeout_ms)
+            libusb_control_transfer(self.handle().handle,
+                                    request_type, request,
+                                    value, index, ptr, len, timeout_ms)
         };
 
         if res < 0 {
@@ -428,7 +451,7 @@ impl DeviceHandle {
     /// descriptors.
     pub fn read_languages(&self, timeout: Duration) -> ::Result<Vec<Language>> {
         let mut buf = Vec::<u8>::with_capacity(256);
-
+        
         let buf_slice = unsafe {
             slice::from_raw_parts_mut((&mut buf[..]).as_mut_ptr(), buf.capacity())
         };
@@ -439,7 +462,7 @@ impl DeviceHandle {
                                     0,
                                     buf_slice,
                                     timeout)?;
-
+        
         unsafe {
             buf.set_len(len);
         }
@@ -460,13 +483,15 @@ impl DeviceHandle {
             slice::from_raw_parts_mut((&mut buf[..]).as_mut_ptr(), buf.capacity())
         };
 
-        let len = self.read_control(request_type(Direction::In, RequestType::Standard, Recipient::Device),
+        let len = self.read_control(request_type(Direction::In,
+                                                 RequestType::Standard,
+                                                 Recipient::Device),
                                     LIBUSB_REQUEST_GET_DESCRIPTOR,
                                     (LIBUSB_DT_STRING as u16) << 8 | index as u16,
                                     language.lang_id(),
                                     buf_slice,
                                     timeout)?;
-
+        
         unsafe {
             buf.set_len(len);
         }
@@ -523,25 +548,30 @@ impl DeviceHandle {
     pub fn alloc_transfer(&self, iso_packets: u32)
                       -> ::Result<Transfer>
     {
+        let handle = self.handle();
         let transfer = unsafe {
             let t = libusb_alloc_transfer(iso_packets as c_int);
             if t.is_null() {
                 return Err(Error::NoMem);
             }
-            (*t).dev_handle = self.handle;
+            (*t).dev_handle = handle.handle;
             t
                 
         };
 
-        Ok(unsafe{transfer::from_libusb(&self.context, transfer)})
+        
+        Ok(unsafe{transfer::from_libusb(&handle.context, &self.0,
+                                        transfer)})
     }
 }
 
 #[doc(hidden)]
 pub unsafe fn from_libusb(context: &Arc<ContextAsync>, handle: *mut libusb_device_handle) -> DeviceHandle {
     DeviceHandle {
-        context: context.clone(),
-        handle: handle,
-        interfaces: BitSet::with_capacity(u8::max_value() as usize + 1),
+        0: Arc::new(Mutex::new(DeviceHandleAsync{
+            context: context.clone(),
+            handle: handle,
+            interfaces: BitSet::with_capacity(u8::max_value() as usize + 1),
+        }))
     }
 }

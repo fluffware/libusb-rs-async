@@ -1,5 +1,8 @@
-use std::sync::{Arc,Mutex};
+use std::sync::{Arc,Weak,Mutex};
 use context::ContextAsync;
+use device_handle::DeviceHandleAsync;
+use error;
+use error::Error;
 use std::future::{Future};
 use std::task;
 use std::pin::Pin;
@@ -71,10 +74,14 @@ impl From<c_int> for TransferStatus
 pub struct Transfer {
     // Avoids having the context dropped while this transfer is active
     _context: Arc<ContextAsync>,
+    _device: Weak<Mutex<DeviceHandleAsync>>,
     buffer: Vec<u8>,
     transfer: *mut libusb_transfer,
     waker: Mutex<Option<task::Waker>>
 }
+
+unsafe impl Send for Transfer {}
+unsafe impl Sync for Transfer {}
 
 impl Drop for Transfer
 {
@@ -83,7 +90,7 @@ impl Drop for Transfer
         unsafe {
             libusb_free_transfer(self.transfer);
         }
-        println!("Dropped");
+        //println!("Dropped");
     }
 }
 
@@ -104,7 +111,7 @@ extern "C" fn asyn_callback(libusb_transfer: *mut libusb_transfer)
         }
     }
     
-    println!("Callback done");
+    //println!("Callback done");
 }
 
 impl Transfer {
@@ -178,16 +185,16 @@ impl Transfer {
     /// Start a transfer request
     ///
     /// The transfer must have been prepared by one of the `fill_*` methods.
-    pub fn submit(self) 
-                  -> ::Result<TransferFuture>
+    pub fn submit(self) -> ::TransferFuture
     {
         unsafe{(*self.transfer).callback = asyn_callback};
         let tarc = Arc::new(self);
         unsafe{(*tarc.transfer).user_data = Arc::into_raw(tarc.clone()) as *mut libc::c_void};
-        try_unsafe! {
-            libusb_submit_transfer(tarc.transfer)
-        };
-        Ok(TransferFuture{transfer: Some(tarc)})
+        
+        let error = error::from_libusb(
+            unsafe{libusb_submit_transfer(tarc.transfer)});
+            
+        TransferFuture{transfer: Some(tarc), error}
     }
 
     /// Get the status of a completed submit 
@@ -203,6 +210,7 @@ impl Transfer {
     {
         self.buffer.as_ref()
     }
+
 }
 
 impl PartialEq for Transfer
@@ -219,11 +227,13 @@ impl Eq for Transfer
 
 #[doc(hidden)]
 pub unsafe fn from_libusb(context: &Arc<ContextAsync>,
+                          device: &Arc<Mutex<DeviceHandleAsync>>,
                           transfer: *mut libusb_transfer)
                           -> Transfer
 {
     Transfer {
         _context: context.clone(),
+        _device: Arc::downgrade(device),
         buffer: Vec::new(),
         waker: Mutex::new(None),
         transfer
@@ -238,6 +248,7 @@ pub unsafe fn from_libusb(context: &Arc<ContextAsync>,
 pub struct TransferFuture
 {
     transfer: Option<Arc<Transfer>>,
+    error: Error
 }
 
 impl Drop for TransferFuture
@@ -254,25 +265,29 @@ impl Drop for TransferFuture
 
 impl Future for TransferFuture
 {
-    type Output = Transfer;
+    type Output = Result<Transfer, Error>;
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context)
             -> task::Poll<Self::Output>
     {
+        match &self.error {
+            Error::Success => {}
+            e => return task::Poll::Ready(Err(e.clone()))
+        }
+        
         if self.transfer.is_some() {
             if Arc::strong_count(self.as_ref().transfer.as_ref().unwrap())==1 {
                 let transfer = self.get_mut().transfer.take().unwrap();
                 if let Ok(mut transfer) = Arc::try_unwrap(transfer) {
-                    let mut buf_len = 
-                        unsafe{(*transfer.transfer).actual_length};
-                    if unsafe{(*transfer.transfer).transfer_type} 
-                    == libusb::LIBUSB_TRANSFER_TYPE_CONTROL {
-                        buf_len += 8;
-                    }
+                    let usb_transfer = unsafe{&mut *transfer.transfer};
+                    let mut buf_len = usb_transfer.actual_length;
+                    if usb_transfer.transfer_type 
+                        == libusb::LIBUSB_TRANSFER_TYPE_CONTROL {
+                            buf_len += 8;
+                        }
                     transfer.buffer.resize(
                         usize::try_from(buf_len).unwrap(),
                         0);
-                    
-                    return task::Poll::Ready(transfer);
+                    return task::Poll::Ready(Ok(transfer));
                 } else {
                     panic!("Failed to unwrap Arc into Transfer");
                 }

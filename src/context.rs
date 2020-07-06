@@ -141,7 +141,7 @@ impl ContextAsync
         if thread.is_none() {
             let context = ca.clone();
             *thread = Some(thread::spawn(move || {
-                println!("USB event loop started");
+                //println!("USB event loop started");
                 let libusb_ctxt = context.context;
                 loop {
                     {
@@ -154,7 +154,7 @@ impl ContextAsync
                         libusb_handle_events(libusb_ctxt);
                     }
                 }
-                println!("USB event loop stopped");
+                //println!("USB event loop stopped");
             }));
         }
     }

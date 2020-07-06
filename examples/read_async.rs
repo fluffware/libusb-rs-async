@@ -69,10 +69,9 @@ fn main()
                         100);
                     
                     
-                    let submit = trans.submit().unwrap();
-                    let res = block_on(submit);
-                    match res.get_status() {
-                        TransferStatus::Completed => {
+                    let submit = trans.submit();
+                    match block_on(submit){
+                        Ok(res) => {
                             let b = res.get_buffer();
                             if b.len() >= 12 {
                                 let name_utf16 = b[10..].chunks(2).map({
@@ -84,7 +83,7 @@ fn main()
                                 println!("No string descriptor");
                             }
                         },
-                        s => println!("Result status: {}", s)
+                        Err(s) => println!("Result status: {}", s)
                     }
 
                     if let Some((intf,ep)) = ep_intf {
@@ -99,13 +98,16 @@ fn main()
                             trans.fill_interrupt_read(ep, 8);
                             
                             
-                            let submit = trans.submit().unwrap();
-                            let res = block_on(submit);
-                            match res.get_status() {
-                                TransferStatus::Completed => {
+                            let submit = trans.submit();
+                            
+                            match block_on(submit) {
+                                Ok(res) => {
                                     println!("Interrupt in: {:?}", res.get_buffer());
                                 },
-                                s => println!("Result status: {}", s)
+                                Err(s) => {
+                                    println!("Result status: {}", s);
+                                    break
+                                }
                             }
                         }
                     }
