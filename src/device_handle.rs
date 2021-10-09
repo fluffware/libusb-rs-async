@@ -125,7 +125,7 @@ impl DeviceHandle {
     pub fn release_interface(&mut self, iface: u8) -> ::Result<()> {
         let mut handle = self.handle();
         try_unsafe!(libusb_release_interface(handle.handle, iface as c_int));
-        handle.interfaces.remove(&(iface as usize));
+        handle.interfaces.remove(iface as usize);
         Ok(())
     }
 

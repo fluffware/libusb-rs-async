@@ -1,6 +1,6 @@
 [package]
 name = "libusb-async"
-version = "0.5.0"
+version = "0.5.1"
 authors = ["David Cuddeback <david.cuddeback@gmail.com>", "Simon Berg <ksb@fluffware.se>"]
 description = "Rust library for accessing USB devices."
 license = "MIT"
@@ -11,10 +11,10 @@ readme = "README.md"
 keywords = ["usb", "libusb", "hardware", "bindings"]
 
 [dependencies]
-bit-set = "0.2.0"
-libusb-sys = "0.2.3"
+bit-set = "0.5"
+libusb-sys = "0.2"
 libc = "0.2"
 
 [dev-dependencies]
-regex = "0.1.26"
-futures = "0.3.5"
+regex = "0.1"
+futures = "0.3"
